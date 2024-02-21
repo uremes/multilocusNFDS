@@ -60,13 +60,15 @@ int main(int argc, char * argv[]) {
     char* vtCogName = 0;
     char* markerFilename = NULL;
     int secondVaccinationGeneration = -100;
+    int customSampleSize = 0;
+    int customSampleInterval = 0;
 
     if (argc == 1) {
         usage(argv[0]);
         return 1;
     } else {
         int opt = 0;
-        while ((opt = getopt(argc,argv,"hc:p:s:v:i:t:n:g:u:l:y:j:k:f:x:w:r:o:m:z:e:a:b:d:q:")) != EOF) {
+        while ((opt = getopt(argc,argv,"hc:p:s:v:i:t:n:g:u:l:y:j:k:f:x:w:r:o:m:z:e:a:b:d:q:N:M:")) != EOF) {
             switch (opt) {
                 case 'h':
                     usage(argv[0]);
@@ -152,6 +154,12 @@ int main(int argc, char * argv[]) {
                 case 'q':
                     secondVaccinationGeneration = atoi(optarg);
                     break;
+	        case 'N':
+                    customSampleSize = atoi(optarg);
+                    break;
+	        case 'M':
+                    customSampleInterval = atoi(optarg);
+                    break;
             }
         }
     }
@@ -182,6 +190,17 @@ int main(int argc, char * argv[]) {
         usage(argv[0]);
         return 1;
     }
+
+    // check if sampling list needs to be rewritten:
+
+    if (customSampleInterval > 0) {
+      for (int i = 0; i < samplingList.size(); i++) {
+          samplingList[i]=customSampleSize*(i%customSampleInterval==0);
+	  //std::cout << samplingList[i] << ' ';
+      }
+      //std::cout << std::endl;
+    }
+
     int genLimit = p.numGen+minGen;
 //    int maxScNum = 1+(*std::max_element(std::begin(scList),std::end(scList)));
     int maxScNum = 1+(*std::max_element(scList.begin(),scList.end()));
@@ -419,14 +438,23 @@ int main(int argc, char * argv[]) {
         
         // compare to genomes
         if ((gen-minGen) < samplingList.size() && samplingList[gen-minGen] > 0 && p.programme != "s" && p.programme != "x") {
-            int compareSamplesCheck = compareSamples(gen,minGen,samplingList[gen-minGen],currentIsolates,population,accessoryLoci,scList,sampledVtScFreq,sampledNvtScFreq,sampledSeroFreq[gen-minGen],serotypeList,vtCogFittingStatsList,nvtCogFittingStatsList,strainFittingStatsList,sampleOutFile);
-            if (compareSamplesCheck != 0) {
-                std::cerr << "Unable to compare simulated and actual frequencies" << std::endl;
-                usage(argv[0]);
-                return 1;
-            } else {
-                numberComparisons++;
-            }
+	    if (customSampleInterval > 0) {
+	        int sampleCheck = firstSample(currentIsolates,samplingList[gen-minGen],sampleOutFile,gen);
+		if (sampleCheck != 0) {
+		  std::cerr << "Unable to take a random sample" << std::endl;
+		  usage(argv[0]);
+		  return 1;
+		}
+	    } else {
+                int compareSamplesCheck = compareSamples(gen,minGen,samplingList[gen-minGen],currentIsolates,population,accessoryLoci,scList,sampledVtScFreq,sampledNvtScFreq,sampledSeroFreq[gen-minGen],serotypeList,vtCogFittingStatsList,nvtCogFittingStatsList,strainFittingStatsList,sampleOutFile);
+                if (compareSamplesCheck != 0) {
+                    std::cerr << "Unable to compare simulated and actual frequencies" << std::endl;
+                    usage(argv[0]);
+                    return 1;
+                } else {
+                    numberComparisons++;
+                }
+	    }
         } else if ((gen-minGen) < samplingList.size() && samplingList[gen-minGen] > 0 && p.programme == "s") {
             int justRecordStatsCheck = justRecordStats(gen,minGen,samplingList[gen-minGen],currentIsolates,accessoryLoci);
             if (justRecordStatsCheck != 0) {
@@ -441,7 +469,8 @@ int main(int argc, char * argv[]) {
     // Print summary information //
     ///////////////////////////////
     
-    if (p.programme != "s" && p.programme != "x") {
+    //if (p.programme != "s" && p.programme != "x") {
+    if (numberComparisons > 0) {
         
         // calculate reproductive fitness metric
         std::vector<double> rFitVector(scList.size(),0.0);
