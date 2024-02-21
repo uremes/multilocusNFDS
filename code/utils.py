@@ -1,94 +1,198 @@
-import numpy as np
-import scipy.stats
-import matplotlib
-import matplotlib.pyplot as plt
-import elfi
+import operator
+import os
+import uuid
+
 import GPy
+import numpy as np
+import scipy
+import scipy.stats as ss
+
+import elfi
+
+SIMULATOR_PATH = './code/simulator/'
+SAMPLE_FILE = './data/mass.input'
+COGORDERING_FILE = './data/mass.cogOrdering'
 
 
-def frequency(data, SC, timepoint):
-    # Empty array, same size as the number of sequence clusters
-    z = np.asarray((np.arange(SC+1), np.zeros(SC+1)), dtype='int32').T
-    freq_list = []
-    for d_item in data:
-        df = np.copy(d_item)
-        vt = np.copy(z)
-        nvt = np.copy(z)
-        # Counts of each vaccine type isolates (VT and NVT)
-        unique_vt, counts_vt = np.unique(df[np.where((df['Time'] == timepoint) & (df['VT'] == 1))]['SC'], return_counts=True)
-        count_vt = np.asarray((unique_vt, counts_vt)).T
-        # Takes zero counts also into account
-        for item in count_vt:
-            if (item[0] == vt[item[0], 0]):
-                vt[item[0], 1] += item[1]
-        # Same for NVT types
-        unique_nvt, counts_nvt = np.unique(df[np.where((df['Time'] == timepoint) & (df['VT'] == 0))]['SC'], return_counts=True)
-        count_nvt = np.asarray((unique_nvt, counts_nvt)).T
-        for item in count_nvt:
-            if (item[0] == nvt[item[0], 0]):
-                nvt[item[0], 1] += item[1]
-        # Frequencies of the different vaccinetype isolates
-        vt_freq = vt[:, 1] / len(df[np.where(df['Time'] == timepoint)])
-        nvt_freq = nvt[:, 1] / len(df[np.where(df['Time'] == timepoint)])
-
-        freq_list.append(np.append(vt_freq, nvt_freq))
-    return freq_list
+def calculate_frequencies(observed, num_clusters, timepoint):
+    fs = []
+    for obs in observed:
+        obs_attime = obs[np.where(obs['Time'] == timepoint)]
+        obscount_1 = np.bincount(obs_attime[np.where(obs_attime['VT'] == 1)]['SC'],
+                                 minlength=num_clusters)
+        obscount_0 = np.bincount(obs_attime[np.where(obs_attime['VT'] == 0)]['SC'],
+                                 minlength=num_clusters)
+        fs.append(np.concatenate((obscount_1, obscount_0))/len(obs_attime))
+    return np.array(fs)
 
 
-def get_timepoints(data, sum_node=1):
-    timepoints = np.unique(data[0]['Time'])
-    timepoints.sort()
-    if sum_node == 1:
-        timepoints = np.delete(timepoints, 0)
-    return timepoints
+def collate(frequencies):
+    frequencies = np.atleast_2d(frequencies)
+    num_sequence_clusters = int(len(frequencies[0])/2)
+    collated = []
+    for obs in frequencies:
+        new_obs = np.zeros(4)
+        # vaccine type
+        inds = np.array([5, 13, 14, 15, 18, 22, 24, 29, 31, 39, 40])
+        new_obs[0] = np.sum(obs[inds]) + np.sum(obs[num_sequence_clusters + inds])
+        # non-vaccine type
+        inds = np.array([2, 4, 8, 10, 11, 12, 16, 17, 19, 21, 28, 30, 33, 38])
+        new_obs[1] = np.sum(obs[inds]) + np.sum(obs[num_sequence_clusters + inds])
+        # mixed
+        inds = np.array([0, 1, 9, 23])
+        new_obs[2] = np.sum(obs[inds]) + np.sum(obs[num_sequence_clusters + inds])
+        # empty
+        inds = np.array([3,  6,  7, 20, 25, 26, 27, 32, 34, 35, 36, 37])
+        new_obs[3] = np.sum(obs[inds]) + np.sum(obs[num_sequence_clusters + inds])
+        collated.append(new_obs)
+    return np.array(collated)
 
 
-def median_frequencies(data):
-    # Will be as long as the number of sequence clusters
-    med_freqs = []
-    # Goes through each sequence cluster
-    for sc in np.arange(len(data[0])):
-        # Empty list to get the frequency of single sc from all simulations
-        freqs = []
-        for simulation in data:
-            freqs.append(simulation[sc])
-        # Appends the median frequency list with a sc frequency median of the simulations
-        med_freqs.append(np.median(freqs))
-    return med_freqs
+def JSD(sims, observed=None, pi=0.5):
+    p = np.squeeze(observed)/np.sum(np.squeeze(observed))
+    d = []
+    for sim in sims:
+        q = np.squeeze(sim)/np.sum(np.squeeze(sim))
+        m = pi * p + (1-pi) * q
+        d.append(max(pi * ss.entropy(p, m) + (1-pi) * ss.entropy(q, m), np.exp(-20)))
+    return np.array(d)
 
 
-def frequency_plot(data, SC, simulation=1):
-    # To increase the figure size
-    plt.rcParams['figure.figsize'] = [20, 5]
-    # Creating the plot
-    timepoints = len(data)
-    SC_index = np.arange(SC + 1)*timepoints
-    width = 0.75  # the width of the bars (#2.5/len(data))
-    l = int((len(data[0])/2))  # used to divide the data into VT and NVT types
-    fig, ax = plt.subplots()  # Creates the plot
-    label = 0
-    pos = SC_index - width*(timepoints/2) + (width/2)  # starting position
-    for array in data:
-        if (label == 0):
-            ax.bar(pos, array[0:l], width, bottom=0, linewidth=1, edgecolor='black', color='tomato', label='Vaccinetype isolates')
-            ax.legend()
-            ax.bar(pos, array[l:], width, bottom=array[0:l], linewidth=1, edgecolor='black', color='teal', label='Non-vaccinetype isolates')
-            ax.legend()
-            label += 1
-        elif (label != 0):
-            ax.bar(pos, array[0:l], width, bottom=0, linewidth=1, edgecolor='black', color='tomato')
-            ax.bar(pos, array[l:], width, bottom=array[0:l], linewidth=1, edgecolor='black', color='teal')
-        pos += width
-    # Adding rest of the labels and titles
-    if (simulation == 1):
-        ax.set_ylabel('Frequency in simulation')
-    elif (simulation == 0):
-        ax.set_ylabel('Frequency in sample')
-    ax.set_xlabel('Sequence cluster')
-    ax.set_title('Frequency of each sequence cluster at three different timepoints, with the vaccination types')
-    ax.set_xticks(SC_index)
-    ax.set_xticklabels(np.arange(SC+1))
-    fig
+def prepare_inputs_neutral(*inputs, **kwinputs):
+    input_list = list(inputs)
+    kwinputs['output_filename'] = 'MA.popsim_2_params_' + str(uuid.uuid4())
+    kwinputs['input_filename'] = input_list[-1]
+    kwinputs['simulator_path'] = input_list[-2]
+
+    for i in range(2):
+        input_list[i] = np.exp(input_list[i])
+
+    inputs = tuple(input_list)
+    return inputs, kwinputs
+
+
+def prepare_inputs_ho(*inputs, **kwinputs):
+    input_list = list(inputs)
+    kwinputs['output_filename'] = 'MA.popsim_3_{}'.format(str(uuid.uuid4()))
+    kwinputs['input_filename'] = input_list[-1]
+    kwinputs['simulator_path'] = input_list[-2]
+
+    for i in range(3):
+        input_list[i] = np.exp(input_list[i])
+
+    inputs = tuple(input_list)
+    return inputs, kwinputs
+
+
+def prepare_inputs_he(*inputs, **kwinputs):
+    input_list = list(inputs)
+    kwinputs['output_filename'] = 'MA.popsim_5_params_' + str(uuid.uuid4())
+    kwinputs['COG_ordering_file'] = input_list[-1]
+    kwinputs['input_filename'] = input_list[-2]
+    kwinputs['simulator_path'] = input_list[-3]
+
+    for i in range(4):
+        input_list[i] = np.exp(input_list[i])
+
+    inputs = tuple(input_list)
+    return inputs, kwinputs
+
+
+def process_result(completed_process, *inputs, **kwinputs):
+    # Reads the simulations from the file.
+    output_filename = kwinputs['output_filename']
+    output_filename += '.sample.out'
+    dt = np.dtype([('Time', np.int32), ('VT', np.int32), ('SC', np.int32)])
+    simulation = np.genfromtxt(output_filename, dtype=dt, names=True, usecols=(1, 3, 4))
+
+    # Cleans up the output file after reading the data in.
+    os.remove(output_filename)
+
+    # This will be passed to ELFI as the result of the command.
+    return simulation
+
+
+def get_sim_vec(sim_params, prepare_inputs, M=0, N=0):
+    # compile simulator
+    os.system('{}/compile.sh {}'.format(SIMULATOR_PATH, SIMULATOR_PATH))
+
+    # make external command to call the simulator
+    sim_call = ('{simulator_path}/freqDepSelect -c CLS02514 -p f -t 1 '
+                '-n 100000 -g 72 -l 0.05 -u 0.95 -o {output_filename} -f {input_filename} ')
+    sim_call = sim_call + sim_params
+
+    if M > 0 and N > 0:
+        sim_call = '{} -M {} -N {}'.format(sim_call, M, N)
+
+    # make vectorised simulator call
+    nfds_sim = elfi.tools.external_operation(sim_call, stdout=True, prepare_inputs=prepare_inputs,
+                                             process_result=process_result)
+    nfds_sim_vector = elfi.tools.vectorize(nfds_sim)
+    return nfds_sim_vector
+
+
+def add_summaries_distance(sim, use_collate=False):
+    if use_collate:
+        f_36 = elfi.Summary(calculate_frequencies, sim, 41, 36)
+        f_72 = elfi.Summary(calculate_frequencies, sim, 41, 72)
+        s_36 = elfi.Summary(collate, f_36)
+        s_72 = elfi.Summary(collate, f_72)
+    else:
+        s_36 = elfi.Summary(calculate_frequencies, sim, 41, 36)
+        s_72 = elfi.Summary(calculate_frequencies, sim, 41, 72)
+
+    # JSD
+    d_36 = elfi.Discrepancy(JSD, s_36)
+    d_72 = elfi.Discrepancy(JSD, s_72)
+    d_sum = elfi.Operation(operator.add, d_36, d_72)
+    # convert to distance
+    d_sqrt = elfi.Operation(np.sqrt, d_sum)
+    # normalise range
+    d_norm = elfi.Operation(operator.add, d_sqrt, -1)
+
+
+def get_model_neutral(bounds, observed, M=0, N=0, use_collate=False):
+    m = elfi.ElfiModel(name='neutral')
+    elfi.Prior('uniform', bounds['v'][0], bounds['v'][1]-bounds['v'][0], model=m, name='v')
+    elfi.Prior('uniform', bounds['i'][0], bounds['i'][1]-bounds['i'][0], model=m, name='i')
+
+    sim_params = '-v {0} -i {1} -s 0'
+    nfds_sim_vector = get_sim_vec(sim_params, prepare_inputs_neutral, M=M, N=N)
+    nfds = elfi.Simulator(nfds_sim_vector, m['v'], m['i'],
+                          SIMULATOR_PATH, SAMPLE_FILE, observed=observed)
+    add_summaries_distance(nfds, use_collate=use_collate)
+    return m
+
+
+def get_model_ho(bounds, observed, M=0, N=0, use_collate=False, use_scale=False):
+    m = elfi.ElfiModel(name='NFDS_ho')
+    elfi.Prior('uniform', bounds['v'][0], bounds['v'][1]-bounds['v'][0], model=m, name='v')
+    elfi.Prior('uniform', bounds['s'][0], bounds['s'][1]-bounds['s'][0], model=m, name='s')
+    elfi.Prior('uniform', bounds['i'][0], bounds['i'][1]-bounds['i'][0], model=m, name='i')
+
+    sim_params = '-v {0} -s {1} -i {2}'
+    nfds_sim_vector = get_sim_vec(sim_params, prepare_inputs_ho, M=M, N=N)
+    nfds = elfi.Simulator(nfds_sim_vector, m['v'], m['s'], m['i'],
+                          SIMULATOR_PATH, SAMPLE_FILE, observed=observed)
+    add_summaries_distance(nfds, use_collate=use_collate)
+    return m
+
+
+def get_model_he(bounds, observed, M=0, N=0, use_collate=False, use_scale=False):
+    m = elfi.ElfiModel(name='NFDS_he')
+    elfi.Prior('uniform', bounds['v'][0], bounds['v'][1]-bounds['v'][0], model=m, name='v')
+    elfi.Prior('uniform', bounds['s'][0], bounds['s'][1]-bounds['s'][0], model=m, name='s')
+    elfi.Prior('uniform', bounds['i'][0], bounds['i'][1]-bounds['i'][0], model=m, name='i')
+    scale = elfi.Operation(operator.sub, m['s'], bounds['j'][0], name='scale')
+    elfi.Prior('uniform', bounds['j'][0], scale, model=m, name='j')
+    elfi.Prior('uniform', bounds['y'][0], bounds['y'][1]-bounds['y'][0], model=m, name='y')
+
+    sim_params = '-v {0} -s {1} -i {2} -j {3} -y {4} -r {COG_ordering_file}'
+    nfds_sim_vector = get_sim_vec(sim_params, prepare_inputs_he, M=M, N=N)
+    nfds = elfi.Simulator(nfds_sim_vector, m['v'], m['s'], m['i'], m['j'], m['y'],
+                          SIMULATOR_PATH, SAMPLE_FILE, COGORDERING_FILE, observed=observed)
+    add_summaries_distance(nfds, use_collate=use_collate)
+    return m
 
 
 def create_target_model(m, bounds):
@@ -107,20 +211,3 @@ def find_min(model, bounds):
     predict_mean = lambda x: model.predict(np.atleast_2d(x))[0]
     optim = scipy.optimize.minimize(predict_mean, x_opt, bounds=bounds)
     return optim.x, optim.fun
-
-
-def print_find_min(param_names, xmin, fmin):
-    minimum_jsd = np.square(np.exp(fmin))
-    print('parameters:', create_string(param_names, '{}'), sep='\t')
-    print('min values:', create_string(xmin, '{:06.5f}'), sep='\t')
-    print('\nfmin:', fmin, '\nminimum_jsd:', minimum_jsd, sep='\t')
-
-
-def create_string(string_list, format_type):
-    string_var = ''
-    for i in np.arange(len(string_list)):
-        if i != len(string_list)-1:
-            string_var += format_type.format(string_list[i]) + '\t'
-        elif i == len(string_list)-1:
-            string_var += format_type.format(string_list[i])
-    return string_var

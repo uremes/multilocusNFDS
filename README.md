@@ -1,20 +1,16 @@
 # Negative frequency-dependent selection in post-vaccine pneumococcal population
 
 This repository contains resources to replicate the parameter inference experiments reported by Corander et al. [1]. 
-The inference procedure is implemented with ELFI [2] in the attached notebook.
+The inference procedure is implemented with ELFI [2].
 
-The notebook is tested with Python 3.5 and ELFI v. 0.7.4.
+The codes have been tested with Python 3.5 and ELFI v. 0.7.4.
 
 ## Files and folders
 
-- **code/simulator/**
-  This folder contains the multilocus NFDS simulator.
-- **code/utils.py**
-  Contais operations which are used in parameter inference with ELFI and in visualisation.
+- **code/**
+  This folder contains the simulator and utilities for parameter inference with ELFI.
 - **data/**
   This folder contains the observed data.
-- **inference.ipynb**
-  Jupyter notebook defining the ELFI model and running the inference.
 
 ## References
 
